@@ -43,10 +43,11 @@ trait Stateful {
     fn reset(&mut self);
 }
 
+const LINK_CHUNK_SIZE: usize = 1;
 #[derive(Clone)]
 struct Link {
+    trailing_bytes: [u8; LINK_CHUNK_SIZE],
     prev: Code,
-    byte: u8,
 }
 
 #[derive(Default)]
@@ -984,8 +985,26 @@ impl Table {
     }
 
     fn derive(&mut self, from: &Link, byte: u8, prev: Code) -> Link {
-        let link = from.derive(byte, prev);
         let depth = self.depths[usize::from(prev)] + 1;
+        let link = if (usize::from(depth) - 1) % LINK_CHUNK_SIZE == 0 {
+            Link {
+                prev: prev,
+                trailing_bytes: {
+                    let mut bs = [0; LINK_CHUNK_SIZE];
+                    bs[0] = byte;
+                    bs
+                },
+            }
+        } else {
+            Link {
+                prev: from.prev,
+                trailing_bytes: {
+                    let mut bs = from.trailing_bytes.clone();
+                    bs[(usize::from(depth) - 1) % LINK_CHUNK_SIZE] = byte;
+                    bs
+                },
+            }
+        };
         self.inner.push(link.clone());
         self.depths.push(depth);
         link
@@ -995,14 +1014,14 @@ impl Table {
         let mut code_iter = code;
         let table = &self.inner[..=usize::from(code)];
         let len = code_iter;
-        for ch in out.iter_mut().rev() {
+        for ch in out.chunks_mut(LINK_CHUNK_SIZE).rev() {
             //(code, cha) = self.table[k as usize];
             // Note: This could possibly be replaced with an unchecked array access if
             //  - value is asserted to be < self.next_code() in push
             //  - min_size is asserted to be < MAX_CODESIZE
             let entry = &table[usize::from(code_iter)];
             code_iter = core::cmp::min(len, entry.prev);
-            *ch = entry.byte;
+            ch.copy_from_slice(&entry.trailing_bytes[..ch.len()]);
         }
         out[0]
     }
@@ -1010,13 +1029,14 @@ impl Table {
 
 impl Link {
     fn base(byte: u8) -> Self {
-        Link { prev: 0, byte }
-    }
-
-    // TODO: this has self type to make it clear we might depend on the old in a future
-    // optimization. However, that has no practical purpose right now.
-    fn derive(&self, byte: u8, prev: Code) -> Self {
-        Link { prev, byte }
+        Link {
+            prev: 0,
+            trailing_bytes: {
+                let mut bs = [0; LINK_CHUNK_SIZE];
+                bs[0] = byte;
+                bs
+            },
+        }
     }
 }
 
